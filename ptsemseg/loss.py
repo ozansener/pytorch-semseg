@@ -19,6 +19,17 @@ def cross_entropy2d(input, target, weight=None, size_average=True):
         loss /= mask.data.sum()
     return loss
 
+def l1_loss_instance(input, target, size_average=True):
+    mask = target!=250
+    if mask.data.sum() < 1:
+        # no instance pixel
+        return None 
+
+    lss = F.l1_loss(input[mask], target[mask], size_average=False)
+    if size_average:
+        lss = lss / mask.data.sum()
+    return lss 
+
 def bootstrapped_cross_entropy2d(input, target, K, weight=None, size_average=True):
     
     batch_size = input.size()[0]

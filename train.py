@@ -57,13 +57,14 @@ def train(args):
     if hasattr(model.module, 'optimizer'):
         optimizer = model.module.optimizer
     else:
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.l_rate, momentum=0.99, weight_decay=5e-4)
+        optimizer = torch.optim.RMSprop(model.parameters(), lr=1e-2)
 
     if hasattr(model.module, 'loss'):
         print('Using custom loss')
         loss_fn = model.module.loss
     else:
         loss_fn = cross_entropy2d
+        loss_fn = l1_loss_instance
 
     if args.resume is not None:                                         
         if os.path.isfile(args.resume):
@@ -78,15 +79,22 @@ def train(args):
 
     best_iou = -100.0 
     for epoch in range(args.n_epoch):
+        current_loss = 0.0
+        current_batch= 0.0
         model.train()
-        for i, (images, labels) in enumerate(trainloader):
+        for i, (images, labels, instances, imname) in enumerate(trainloader):
             images = Variable(images.cuda())
             labels = Variable(labels.cuda())
+            instances = Variable(instances.cuda())
 
             optimizer.zero_grad()
             outputs = model(images)
 
-            loss = loss_fn(input=outputs, target=labels)
+            #loss = loss_fn(input=outputs[0], target=labels)
+            loss = loss_fn(input=outputs[0],target=instances) 
+            if loss is None:
+                print('WARN: image with no instance {}'.format(imname))
+                continue
 
             loss.backward()
             optimizer.step()
@@ -97,31 +105,40 @@ def train(args):
                     Y=torch.Tensor([loss.data[0]]).unsqueeze(0).cpu(),
                     win=loss_window,
                     update='append')
-
-            if (i+1) % 20 == 0:
-                print("Epoch [%d/%d] Loss: %.4f" % (epoch+1, args.n_epoch, loss.data[0]))
-
+            current_loss += loss.data[0]
+            current_batch += 1.0
+            if (i+1) % 50 == 0:
+                print("Epoch [%d/%d] Loss: %.4f" % (epoch+1, args.n_epoch, current_loss/current_batch))
         model.eval()
-        for i_val, (images_val, labels_val) in tqdm(enumerate(valloader)):
+        tot_loss = 0.0
+        for i_val, (images_val, labels_val, instances_val, imname_val) in enumerate(valloader):
             images_val = Variable(images_val.cuda(), volatile=True)
             labels_val = Variable(labels_val.cuda(), volatile=True)
+            instances_val = Variable(instances_val.cuda(), volatile=True)
 
-            outputs = model(images_val)
-            pred = outputs.data.max(1)[1].cpu().numpy()
-            gt = labels_val.data.cpu().numpy()
-            running_metrics.update(gt, pred)
+            outputs = model(images_val)[0]
+            #pred = outputs.data.max(1)[1].cpu().numpy()
+            #gt = labels_val.data.cpu().numpy()
+            instances_gt = instances_val.data.cpu().numpy()
+            #running_metrics.update(gt, pred)
+            ll = loss_fn(input=outputs, target=instances_val)
+            if ll is not None:
+                tot_loss += ll.data[0]
+            #running_metrics.update_instance(instances_gt, outputs.data.cpu().numpy())
 
-        score, class_iou = running_metrics.get_scores()
-        for k, v in score.items():
-            print(k, v)
-        running_metrics.reset()
+        print("Validation Loss:{}".format(tot_loss))
+        #score, class_iou = running_metrics.get_scores()
+        #for k, v in score.items():
+        #    print(k, v)
+        #running_metrics.reset()
 
+        """
         if score['Mean IoU : \t'] >= best_iou:
             best_iou = score['Mean IoU : \t']
             state = {'epoch': epoch+1,
                      'model_state': model.state_dict(),
                      'optimizer_state' : optimizer.state_dict(),}
-            torch.save(state, "{}_{}_best_model.pkl".format(args.arch, args.dataset))
+            torch.save(state, "{}_{}_best_model.pkl".format(args.arch, args.dataset)) """
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Hyperparams')

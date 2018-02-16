@@ -4,11 +4,12 @@ from ptsemseg.models.utils import *
 
 class segnet(nn.Module):
 
-    def __init__(self, n_classes=21, in_channels=3, is_unpooling=True):
+    def __init__(self, n_classes=21, in_channels=3, is_unpooling=True, tasks=None):
         super(segnet, self).__init__()
 
         self.in_channels = in_channels
         self.is_unpooling = is_unpooling
+        self.tasks = tasks
 
         self.down1 = segnetDown2(self.in_channels, 64)
         self.down2 = segnetDown2(64, 128)
@@ -20,7 +21,13 @@ class segnet(nn.Module):
         self.up4 = segnetUp3(512, 256)
         self.up3 = segnetUp3(256, 128)
         self.up2 = segnetUp2(128, 64)
-        self.up1 = segnetUp2(64, n_classes)
+
+        if 'S' in tasks:
+            self.up1_seg = segnetUp2(64, n_classes)
+        if 'I' in tasks:
+            self.up1_ins = segnetUp2Instance(64, 2)
+        if 'D' in tasks:
+            self.up1_depth = segnetUp2(64,1)
 
     def forward(self, inputs):
 
@@ -34,9 +41,18 @@ class segnet(nn.Module):
         up4 = self.up4(up5, indices_4, unpool_shape4)
         up3 = self.up3(up4, indices_3, unpool_shape3)
         up2 = self.up2(up3, indices_2, unpool_shape2)
-        up1 = self.up1(up2, indices_1, unpool_shape1)
 
-        return up1
+        out = []
+        if 'S' in self.tasks:
+            seg = self.up1_seg(up2, indices_1, unpool_shape1)
+            out.append(seg)
+        if 'I' in self.tasks:
+            ins = self.up1_ins(up2, indices_1, unpool_shape1)
+            out.append(ins)
+        if 'D' in self.tasks:
+            depth = self.up1_depth(up2, indices_1, unpool_shape1)
+            out.append(depth)
+        return out
 
 
     def init_vgg16_params(self, vgg16):

@@ -8,6 +8,7 @@ class runningScore(object):
     def __init__(self, n_classes):
         self.n_classes = n_classes
         self.confusion_matrix = np.zeros((n_classes, n_classes))
+        self.l1_instance_error = 0.0
 
     def _fast_hist(self, label_true, label_pred, n_class):
         mask = (label_true >= 0) & (label_true < n_class)
@@ -19,6 +20,15 @@ class runningScore(object):
     def update(self, label_trues, label_preds):
         for lt, lp in zip(label_trues, label_preds):
             self.confusion_matrix += self._fast_hist(lt.flatten(), lp.flatten(), self.n_classes)
+
+    def update_instance(self, instance_gt, instances_pred):
+        instance_gt = instance_gt.astype(np.int32)
+        instances_pred = instances_pred.astype(np.int32)
+        mask = instance_gt!=250
+        error = np.abs(instances_pred[mask] - instance_gt[mask])
+        self.l1_instance_error += np.sum(error)
+
+
 
     def get_scores(self):
         """Returns accuracy score evaluation result.
@@ -40,7 +50,9 @@ class runningScore(object):
         return {'Overall Acc: \t': acc,
                 'Mean Acc : \t': acc_cls,
                 'FreqW Acc : \t': fwavacc,
-                'Mean IoU : \t': mean_iu,}, cls_iu
+                'Mean IoU : \t': mean_iu,
+                'Instance Error: \t': self.l1_instance_error}, cls_iu
 
     def reset(self):
         self.confusion_matrix = np.zeros((self.n_classes, self.n_classes))
+        self.l1_instance_error = 0.0

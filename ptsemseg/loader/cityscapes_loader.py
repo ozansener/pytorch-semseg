@@ -43,7 +43,7 @@ class cityscapesLoader(data.Dataset):
 
     label_colours = dict(zip(range(19), colors))
 
-    def __init__(self, root, split="train", is_transform=False, 
+    def __init__(self, root, split="train", is_transform=False,
                  img_size=(512, 1024), augmentations=None):
         """__init__
 
@@ -51,7 +51,7 @@ class cityscapesLoader(data.Dataset):
         :param split:
         :param is_transform:
         :param img_size:
-        :param augmentations 
+        :param augmentations
         """
         self.root = root
         self.split = split
@@ -63,19 +63,20 @@ class cityscapesLoader(data.Dataset):
         self.files = {}
 
         self.images_base = os.path.join(self.root, 'leftImg8bit', self.split)
-        self.annotations_base = os.path.join(self.root, 'gtFine_trainvaltest', 'gtFine', self.split)
+        self.annotations_base = os.path.join(self.root, 'gtFine', self.split)
 
         self.files[split] = recursive_glob(rootdir=self.images_base, suffix='.png')
-    
+
         self.void_classes = [0, 1, 2, 3, 4, 5, 6, 9, 10, 14, 15, 16, 18, 29, 30, -1]
         self.valid_classes = [7, 8, 11, 12, 13, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31, 32, 33]
+        self.no_instances =  [7, 8, 11, 12, 13, 17, 19, 20, 21, 22, 23]
         self.class_names = ['unlabelled', 'road', 'sidewalk', 'building', 'wall', 'fence',\
                             'pole', 'traffic_light', 'traffic_sign', 'vegetation', 'terrain',\
                             'sky', 'person', 'rider', 'car', 'truck', 'bus', 'train', \
                             'motorcycle', 'bicycle']
 
         self.ignore_index = 250
-        self.class_map = dict(zip(self.valid_classes, range(19))) 
+        self.class_map = dict(zip(self.valid_classes, range(19)))
 
         if not self.files[split]:
             raise Exception("No files for split=[%s] found in %s" % (split, self.images_base))
@@ -93,24 +94,27 @@ class cityscapesLoader(data.Dataset):
         """
         img_path = self.files[self.split][index].rstrip()
         lbl_path = os.path.join(self.annotations_base,
-                                img_path.split(os.sep)[-2], 
+                                img_path.split(os.sep)[-2],
                                 os.path.basename(img_path)[:-15] + 'gtFine_labelIds.png')
-
+        instance_path = os.path.join(self.annotations_base,
+                                     img_path.split(os.sep)[-2],
+                                     os.path.basename(img_path)[:-15] + 'gtFine_instanceIds.png')
         img = m.imread(img_path)
-        img = np.array(img, dtype=np.uint8)
-
         lbl = m.imread(lbl_path)
-        lbl = self.encode_segmap(np.array(lbl, dtype=np.uint8))
-        
+        ins = m.imread(instance_path)
+
         if self.augmentations is not None:
-            img, lbl = self.augmentations(img, lbl)
-        
+            img, lbl, ins = self.augmentations(np.array(img, dtype=np.uint8), np.array(lbl, dtype=np.uint8), np.array(ins, dtype=np.int32))
+
+        lbl = self.encode_segmap(np.array(lbl, dtype=np.uint8))
+        ins_y, ins_x = self.encode_instancemap(lbl, ins)
+
         if self.is_transform:
-            img, lbl = self.transform(img, lbl)
+            img, lbl, ins_gt = self.transform(img, lbl, ins_y, ins_x)
 
-        return img, lbl
+        return img, lbl, ins_gt, img_path
 
-    def transform(self, img, lbl):
+    def transform(self, img, lbl, ins_y, ins_x):
         """transform
 
         :param img:
@@ -125,12 +129,18 @@ class cityscapesLoader(data.Dataset):
         img = img.astype(float) / 255.0
         # NHWC -> NCWH
         img = img.transpose(2, 0, 1)
-        
+
         classes = np.unique(lbl)
         lbl = lbl.astype(float)
         lbl = m.imresize(lbl, (self.img_size[0], self.img_size[1]), 'nearest', mode='F')
         lbl = lbl.astype(int)
-        
+
+        ins_y = ins_y.astype(float)
+        ins_y = m.imresize(ins_y, (self.img_size[0], self.img_size[1]), 'nearest', mode='F')
+
+        ins_x = ins_x.astype(float)
+        ins_x = m.imresize(ins_x, (self.img_size[0], self.img_size[1]), 'nearest', mode='F')
+
 
         if not np.all(classes == np.unique(lbl)):
             print("WARN: resizing labels yielded fewer classes")
@@ -139,10 +149,12 @@ class cityscapesLoader(data.Dataset):
             print('after det', classes,  np.unique(lbl))
             raise ValueError("Segmentation map contained invalid class values")
 
+        ins = np.stack((ins_y, ins_x))
         img = torch.from_numpy(img).float()
         lbl = torch.from_numpy(lbl).long()
+        ins = torch.from_numpy(ins).float()
 
-        return img, lbl
+        return img, lbl, ins
 
     def decode_segmap(self, temp):
         r = temp.copy()
@@ -167,6 +179,30 @@ class cityscapesLoader(data.Dataset):
             mask[mask==_validc] = self.class_map[_validc]
         return mask
 
+    def encode_instancemap(self, mask, ins):
+        ins[mask==self.ignore_index] = self.ignore_index
+        for _no_instance in self.no_instances:
+            ins[ins==_no_instance] = self.ignore_index
+        ins[ins==0] = self.ignore_index
+
+        instance_ids = np.unique(ins)
+        sh = ins.shape
+        ymap, xmap = np.meshgrid(np.arange(sh[0]),np.arange(sh[1]), indexing='ij')
+
+        out_ymap, out_xmap = np.meshgrid(np.arange(sh[0]),np.arange(sh[1]), indexing='ij')
+        out_ymap = np.ones(ymap.shape)*self.ignore_index
+        out_xmap = np.ones(xmap.shape)*self.ignore_index
+
+        for instance_id in instance_ids:
+            if instance_id == self.ignore_index:
+                continue
+            instance_indicator = (ins == instance_id)
+            coordinate_y, coordinate_x = np.mean(ymap[instance_indicator]), np.mean(xmap[instance_indicator])
+            out_ymap[instance_indicator] = ymap[instance_indicator] - coordinate_y
+            out_xmap[instance_indicator] = xmap[instance_indicator] - coordinate_x
+
+        return out_ymap, out_xmap
+
 if __name__ == '__main__':
     import torchvision
     import matplotlib.pyplot as plt
@@ -175,18 +211,21 @@ if __name__ == '__main__':
                              RandomRotate(10),
                              RandomHorizontallyFlip()])
 
-    local_path = '/home/meetshah1995/datasets/cityscapes/'
+    local_path = '/home/ozansener/Data/cityscapes/'
     dst = cityscapesLoader(local_path, is_transform=True, augmentations=augmentations)
     bs = 4
     trainloader = data.DataLoader(dst, batch_size=bs, num_workers=0)
     for i, data in enumerate(trainloader):
-        imgs, labels = data
+        imgs, labels, instances = data
         imgs = imgs.numpy()[:, ::-1, :, :]
         imgs = np.transpose(imgs, [0,2,3,1])
-        f, axarr = plt.subplots(bs,2)
-        for j in range(bs):      
+
+        f, axarr = plt.subplots(bs,4)
+        for j in range(bs):
             axarr[j][0].imshow(imgs[j])
             axarr[j][1].imshow(dst.decode_segmap(labels.numpy()[j]))
+            axarr[j][2].imshow(instances[j,0,:,:])
+            axarr[j][3].imshow(instances[j,1,:,:])
         plt.show()
         a = raw_input()
         if a == 'ex':
