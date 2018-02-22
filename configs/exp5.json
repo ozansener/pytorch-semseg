@@ -1,0 +1,10 @@
+{
+    "optimizer": "SGD",
+    "lr": 0.01,
+    "dataset": "cityscapes",
+    "arch": "segnet",
+    "tasks": "I",
+    "batch_size": 12,
+    "img_rows": 256,
+    "img_cols": 512
+}

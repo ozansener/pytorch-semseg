@@ -43,7 +43,7 @@ class cityscapesLoader(data.Dataset):
 
     label_colours = dict(zip(range(19), colors))
 
-    def __init__(self, root, split="train", is_transform=False,
+    def __init__(self, root, split=["train"], is_transform=False,
                  img_size=(512, 1024), augmentations=None):
         """__init__
 
@@ -55,6 +55,7 @@ class cityscapesLoader(data.Dataset):
         """
         self.root = root
         self.split = split
+        self.split_text = '+'.join(split)
         self.is_transform = is_transform
         self.augmentations = augmentations
         self.n_classes = 19
@@ -62,10 +63,11 @@ class cityscapesLoader(data.Dataset):
         self.mean = np.array([73.15835921, 82.90891754, 72.39239876])
         self.files = {}
 
-        self.images_base = os.path.join(self.root, 'leftImg8bit', self.split)
-        self.annotations_base = os.path.join(self.root, 'gtFine', self.split)
-
-        self.files[split] = recursive_glob(rootdir=self.images_base, suffix='.png')
+        self.files[self.split_text] = []
+        for _split in self.split:
+            self.images_base = os.path.join(self.root, 'leftImg8bit', _split)
+            self.annotations_base = os.path.join(self.root, 'gtFine', _split)
+            self.files[self.split_text] = recursive_glob(rootdir=self.images_base, suffix='.png')
 
         self.void_classes = [0, 1, 2, 3, 4, 5, 6, 9, 10, 14, 15, 16, 18, 29, 30, -1]
         self.valid_classes = [7, 8, 11, 12, 13, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31, 32, 33]
@@ -78,21 +80,21 @@ class cityscapesLoader(data.Dataset):
         self.ignore_index = 250
         self.class_map = dict(zip(self.valid_classes, range(19)))
 
-        if not self.files[split]:
-            raise Exception("No files for split=[%s] found in %s" % (split, self.images_base))
+        if len(self.files[self.split_text]) < 2:
+            raise Exception("No files for split=[%s] found in %s" % (self.split_text, self.images_base))
 
-        print("Found %d %s images" % (len(self.files[split]), split))
+        print("Found %d %s images" % (len(self.files[self.split_text]), self.split_text))
 
     def __len__(self):
         """__len__"""
-        return len(self.files[self.split])
+        return len(self.files[self.split_text])
 
     def __getitem__(self, index):
         """__getitem__
 
         :param index:
         """
-        img_path = self.files[self.split][index].rstrip()
+        img_path = self.files[self.split_text][index].rstrip()
         lbl_path = os.path.join(self.annotations_base,
                                 img_path.split(os.sep)[-2],
                                 os.path.basename(img_path)[:-15] + 'gtFine_labelIds.png')
@@ -216,7 +218,7 @@ if __name__ == '__main__':
     bs = 4
     trainloader = data.DataLoader(dst, batch_size=bs, num_workers=0)
     for i, data in enumerate(trainloader):
-        imgs, labels, instances = data
+        imgs, labels, instances, f_names = data
         imgs = imgs.numpy()[:, ::-1, :, :]
         imgs = np.transpose(imgs, [0,2,3,1])
 
