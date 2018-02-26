@@ -8,7 +8,7 @@ from ptsemseg.models.linknet import *
 from ptsemseg.models.frrn import *
 
 
-def get_model(name, n_classes):
+def get_model(name, n_classes, _tasks):
     model = _get_model_instance(name)
 
     if name in ['frrnA', 'frrnB']:
@@ -21,7 +21,7 @@ def get_model(name, n_classes):
 
     elif name == 'segnet':
         model = model(n_classes=n_classes,
-                      is_unpooling=True, tasks=['I'])
+                      is_unpooling=True, tasks=_tasks)
         vgg16 = models.vgg16(pretrained=True)
         model.init_vgg16_params(vgg16)
 
