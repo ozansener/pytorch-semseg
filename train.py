@@ -21,6 +21,7 @@ from ptsemseg.augmentations import *
 
 from tensorboardX import SummaryWriter
 
+
 @click.command()
 @click.option('--param_file', default='params.json', help='JSON parameters file')
 def train(param_file):
@@ -49,7 +50,7 @@ def train(param_file):
     writer = SummaryWriter(log_dir='runs/{}_{}'.format(params['exp_id'], datetime.datetime.now().strftime("%I:%M%p on %B %d, %Y")))
 
     # Setup Model
-    model = get_model(params['arch'], n_classes)
+    model = get_model(params['arch'], n_classes, params['tasks'])
 
     model = torch.nn.DataParallel(model, device_ids=range(torch.cuda.device_count()))
     model.cuda()
@@ -63,12 +64,13 @@ def train(param_file):
         optimizer = torch.optim.SGD(model.parameters(), lr=params['lr'], momentum=0.9)
 
 
+    loss_fn = {}
     if hasattr(model.module, 'loss'):
         print('Using custom loss')
         loss_fn = model.module.loss
     else:
-        loss_fn = cross_entropy2d
-        loss_fn = l1_loss_instance
+        loss_fn['S'] = cross_entropy2d
+        loss_fn['I'] = l1_loss_instance
     """
     if args.resume is not None:
         if os.path.isfile(args.resume):
@@ -82,6 +84,12 @@ def train(param_file):
             print("No checkpoint found at '{}'".format(args.resume))
     """
 
+    tasks = []
+    if 'S' in params['tasks']:
+        tasks.append('S')
+    if 'I' in params['tasks']:
+        tasks.append('I')
+
     best_iou = -100.0
     best_loss = 1e8
     n_iter = 0
@@ -92,17 +100,26 @@ def train(param_file):
             for param_group in optimizer.param_groups:
                 param_group['lr'] *= 0.5
             print('Half the learning rate{}'.format(n_iter))
+        target = {}
         for i, (images, labels, instances, imname) in enumerate(trainloader):
             n_iter += 1
             images = Variable(images.cuda())
             labels = Variable(labels.cuda())
             instances = Variable(instances.cuda())
 
+            target['S'] = labels
+            target['I'] = instances
+ 
             optimizer.zero_grad()
             outputs = model(images)
 
-            #loss = loss_fn(input=outputs[0], target=labels)
-            loss = loss_fn(input=outputs[0],target=instances)
+            for task_id, task in enumerate(tasks):
+                if task_id > 0:
+                    loss = loss + loss_fn[task](input=outputs[task_id], target= target[task])
+                else:
+                    loss = loss_fn[task](input = outputs[0], target = target[task])
+
+
             if loss is None:
                 print('WARN: image with no instance {}'.format(imname))
                 continue
@@ -113,34 +130,49 @@ def train(param_file):
         model.eval()
         tot_loss = 0.0
         summed = 0.0
+        target_val = {}
+        val_losses = {}
+        for task in tasks:
+            val_losses[task] = 0.0
         for i_val, (images_val, labels_val, instances_val, imname_val) in enumerate(valloader):
             images_val = Variable(images_val.cuda(), volatile=True)
             labels_val = Variable(labels_val.cuda(), volatile=True)
             instances_val = Variable(instances_val.cuda(), volatile=True)
 
-            outputs = model(images_val)[0]
-            #pred = outputs.data.max(1)[1].cpu().numpy()
-            #gt = labels_val.data.cpu().numpy()
-            instances_gt = instances_val.data.cpu().numpy()
-            #running_metrics.update(gt, pred)
-            ll = loss_fn(input=outputs, target=instances_val)
-            summed +=1
-            if ll is not None:
-                tot_loss += ll.data[0]
-            #running_metrics.update_instance(instances_gt, outputs.data.cpu().numpy())
-        writer.add_scalar('validation_loss', tot_loss/summed, n_iter)
-        print("Validation Loss:{}".format(tot_loss/summed))
-        #score, class_iou = running_metrics.get_scores()
-        #for k, v in score.items():
-        #    print(k, v)
-        #running_metrics.reset()
+            target_val['S'] = labels_val
+            target_val['I'] = instances_val
+ 
+            outputs = model(images_val)
 
+            for task_id, task in enumerate(tasks):
+                if task_id > 0:
+                    ll =  loss_fn[task](input=outputs[task_id],target= target_val[task])
+                    val_losses[task] += ll.data[0]
+                else:
+                    ll = loss_fn[task](input = outputs[0], target = target_val[task])
+                    val_losses[task] += ll.data[0]
+                if 'S' in task:
+                    pred_cpu = outputs[task_id].data.max(1)[1].cpu().numpy()
+                    gt_cpu = labels_val.data.cpu().numpy()
+                    running_metrics.update(gt_cpu, pred_cpu)
+            summed += 1
+            #running_metrics.update_instance(instances_gt, outputs.data.cpu().numpy())
+        for task in tasks:
+            writer.add_scalar('validation_loss_{}'.format(task), val_losses[task]/summed, n_iter)
+        writer.add_scalar('validation_loss_total', sum(val_losses.values())/summed, n_iter)
+
+        score, class_iou = running_metrics.get_scores()
+        for k, v in score.items():
+            writer.add_scalar('score_{}'.format(k), v, n_iter)
+        running_metrics.reset()
+
+        """
         if tot_loss <= best_loss:
             best_loss = tot_loss
             state = {'epoch': epoch+1,
                      'model_state': model.state_dict(),
                      'optimizer_state' : optimizer.state_dict(),}
-            torch.save(state, "saved_models/{}_{}_model.pkl".format(params['exp_id'], tot_loss))
+            torch.save(state, "saved_models/{}_{}_model.pkl".format(params['exp_id'], tot_loss))"""
 
 if __name__ == '__main__':
     train()
